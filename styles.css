@@ -1,0 +1,177 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0a0a0a;
+  color: #fff;
+  min-width: 240px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.container {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+}
+
+.card {
+  background: #141414;
+  border: 1px solid #2a2a2a;
+  border-radius: 16px;
+  width: 280px;
+  max-width: 100%;
+  padding: 22px 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+  overflow: visible;
+  padding-top: 34px;
+  text-align: left;
+}
+
+.avatar {
+  width: 92px;
+  height: 92px;
+  object-fit: contain;
+  display: block;
+  z-index: 2;
+  margin-bottom: -12px;
+  pointer-events: none;
+}
+
+.card:focus-within,
+.card:hover {
+  border-color: #3a3a3a;
+}
+
+.percent {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.percent-suffix {
+  font-size: 12px;
+  font-weight: 600;
+  color: #888;
+  margin-left: 2px;
+}
+
+.status-label {
+  margin-top: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: #e9e9e9;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+.progress-track {
+  height: 8px;
+  background: #1f1f1f;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: #fff;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.percent-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  margin-top: -2px;
+  color: #888;
+}
+
+.sync-btn,
+.stop-btn,
+.download-btn {
+  width: 280px;
+  max-width: 100%;
+  padding: 14px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.test-btn {
+  width: 280px;
+  max-width: 100%;
+  padding: 14px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid #3a3a3a;
+  border-radius: 12px;
+  cursor: pointer;
+  color: #fff;
+  background: #1b1b1b;
+  transition: background 0.2s, transform 0.1s, border-color 0.2s;
+}
+
+.test-btn:hover {
+  background: #232323;
+  border-color: #4a4a4a;
+}
+
+.test-btn:active {
+  transform: scale(0.98);
+}
+
+.sync-btn {
+  color: #0a0a0a;
+  background: #fff;
+}
+
+.sync-btn:hover {
+  background: #e5e5e5;
+}
+
+.sync-btn:active {
+  transform: scale(0.98);
+}
+
+.stop-btn {
+  color: #fff;
+  background: #d32f2f;
+}
+
+.stop-btn:hover {
+  background: #b71c1c;
+}
+
+.stop-btn:active {
+  transform: scale(0.98);
+}
+
+.download-btn {
+  color: #ccc;
+  background: #1e1e1e;
+  border: 1px solid #333;
+  font-size: 12px;
+  padding: 10px 16px;
+}
+
+.download-btn:hover {
+  background: #2a2a2a;
+  color: #fff;
+}

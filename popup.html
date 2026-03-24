@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LinkedIn Message Sync</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <img id="avatar" class="avatar" src="avatar.png" alt="Avatar">
+    <div class="card">
+      <p id="statusLabel" class="status-label">Idle</p>
+      <div class="progress-track">
+        <div id="progressFill" class="progress-fill"></div>
+      </div>
+      <div class="percent-row">
+        <span id="percent" class="percent">0</span><span class="percent-suffix">%</span>
+      </div>
+    </div>
+    <button id="syncBtn" class="sync-btn">Sync Now</button>
+    <button id="testBtn" class="test-btn">Test latest 10</button>
+    <button id="stopBtn" class="stop-btn hidden">Stop</button>
+    <button id="downloadBtn" class="download-btn hidden">Download JSON</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

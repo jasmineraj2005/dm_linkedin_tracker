@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "LinkedIn Message Sync",
+  "version": "2.0.0",
+  "description": "Extract LinkedIn messages using AI vision",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "https://api.openai.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "LinkedIn Message Sync"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/messaging/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
