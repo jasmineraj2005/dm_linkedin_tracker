@@ -5,6 +5,7 @@
   "description": "Extract LinkedIn messages using AI vision",
   "permissions": [
     "activeTab",
+    "downloads",
     "scripting",
     "storage",
     "tabs"

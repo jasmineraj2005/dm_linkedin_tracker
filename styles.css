@@ -137,6 +137,29 @@ body {
   transform: scale(0.98);
 }
 
+.count-btn {
+  width: 280px;
+  max-width: 100%;
+  padding: 14px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid #2d4a3e;
+  border-radius: 12px;
+  cursor: pointer;
+  color: #b8e0cc;
+  background: #13251c;
+  transition: background 0.2s, transform 0.1s, border-color 0.2s;
+}
+
+.count-btn:hover {
+  background: #1a3226;
+  border-color: #3d6b55;
+}
+
+.count-btn:active {
+  transform: scale(0.98);
+}
+
 .sync-btn {
   color: #0a0a0a;
   background: #fff;

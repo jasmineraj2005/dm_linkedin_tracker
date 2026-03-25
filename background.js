@@ -3,6 +3,9 @@
  * Persists sync state in chrome.storage.local so the popup survives being closed.
  */
 
+/** Temporary: Sync Now skips lastSync when true (batch files only). Keep in sync with content.js. */
+const SYNC_TEMP_BATCH_DOWNLOAD_NO_PERSIST = true;
+
 let activeSyncTabId = null;
 
 function setSyncState(obj) {
@@ -95,6 +98,74 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return false;
   }
 
+  if (request.action === 'SYNC_BATCH_FILE') {
+    (async () => {
+      try {
+        const payload = request.payload;
+        if (!payload || typeof payload !== 'object') {
+          sendResponse({ success: false, error: 'Missing payload' });
+          return;
+        }
+        const json = JSON.stringify(payload, null, 2);
+        const base64 = btoa(unescape(encodeURIComponent(json)));
+        const dataUrl = 'data:application/json;base64,' + base64;
+        const date = new Date().toISOString().slice(0, 10);
+        const batchIdx = payload.batchIndex != null ? String(payload.batchIndex) : 'batch';
+        await chrome.downloads.download({
+          url: dataUrl,
+          filename: `linkedin_sync_batch_${batchIdx}_${date}.json`,
+          saveAs: false,
+        });
+        sendResponse({ success: true });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (request.action === 'COUNT_UNREAD_ONLY') {
+    setSyncState({ running: true, pct: 0, label: 'Counting unreads...' });
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.url?.includes('linkedin.com/messaging')) {
+          setSyncState({ running: false, pct: 0, label: 'Open LinkedIn Messaging first' });
+          sendResponse({ success: false, error: 'Open LinkedIn Messaging first' });
+          return;
+        }
+        activeSyncTabId = tab.id;
+        try {
+          await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 400));
+
+        const response = await sendToContentScript(tab.id, { action: 'COUNT_UNREAD_ONLY' });
+        activeSyncTabId = null;
+
+        if (!response?.success) {
+          const stopped = response?.error === 'CANCELLED';
+          setSyncState({ running: false, pct: 0, label: stopped ? 'Stopped' : 'Error' });
+          sendResponse({ success: false, error: response?.error || 'Count failed' });
+          return;
+        }
+
+        const d = response.data;
+        const n = d.initial_unread_count ?? 0;
+        const est = d.estimated_batches ?? 1;
+        const label = `Count · ${n} unreads (~${est} batches)`;
+        setSyncState({ running: false, pct: 100, label });
+        chrome.storage.local.set({ lastUnreadCount: { timestamp: Date.now(), data: d } });
+        sendResponse({ success: true, data: d });
+      } catch (err) {
+        activeSyncTabId = null;
+        setSyncState({ running: false, pct: 0, label: 'Error' });
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
   if (request.action === 'EXTRACT_RAW') {
     setSyncState({ running: true, pct: 0, label: 'Starting...' });
     (async () => {
@@ -129,7 +200,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           ? `Complete · ${unread} unread / ${total} total · missed ${missed}`
           : `Complete · ${unread} unread / ${total} total`;
         setSyncState({ running: false, pct: 100, label });
-        chrome.storage.local.set({ lastSync: { timestamp: Date.now(), data: d } });
+        if (!SYNC_TEMP_BATCH_DOWNLOAD_NO_PERSIST) {
+          chrome.storage.local.set({ lastSync: { timestamp: Date.now(), data: d } });
+        }
         sendResponse({ success: true, data: d });
       } catch (err) {
         activeSyncTabId = null;

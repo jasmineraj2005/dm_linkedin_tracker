@@ -1,7 +1,6 @@
 /**
  * Content script - RAW extraction
- * Clicks each conversation directly, reads URL from browser, scrolls thread
- * for context, and extracts messages with broad selector fallbacks.
+ * Sync uses unread-only batches, test-style shallow thread capture, and optional per-batch downloads.
  */
 
 let cancelled = false;
@@ -22,6 +21,25 @@ function reportProgress(pct, label) {
 
 function checkCancelled() {
   if (cancelled) throw new Error('CANCELLED');
+}
+
+/** Temporary: auto-download each batch; skip clearing Unread filter / full inbox count. Keep in sync with background.js. */
+const SYNC_TEMP_BATCH_DOWNLOAD_NO_PERSIST = true;
+
+function sendSyncBatchFile(payload) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ action: 'SYNC_BATCH_FILE', payload }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!response?.success) {
+        reject(new Error(response?.error || 'SYNC_BATCH_FILE failed'));
+        return;
+      }
+      resolve(response);
+    });
+  });
 }
 
 /* ── List container ── */
@@ -133,16 +151,19 @@ function extractPreview(item) {
 /* ── URL extraction from item ── */
 
 function extractUrl(item) {
-  const linkSelectors = [
-    'a[href*="/messaging/thread/"]',
-    'a[href*="/messaging/"]',
-    'a',
-  ];
+  const threads = item.querySelectorAll('a[href*="/messaging/thread/"]');
+  for (const link of threads) {
+    const h = link.href || '';
+    if (h && !h.includes('/messaging/thread/new')) return h;
+  }
+  const linkSelectors = ['a[href*="/messaging/"]', 'a'];
   for (const s of linkSelectors) {
     const link = item.querySelector(s);
-    if (link && link.href && link.href.includes('/messaging/')) return link.href;
+    if (link && link.href && link.href.includes('/messaging/thread/') && !link.href.includes('/thread/new')) {
+      return link.href;
+    }
   }
-  if (item.tagName === 'A' && item.href && item.href.includes('/messaging/')) return item.href;
+  if (item.tagName === 'A' && item.href && item.href.includes('/messaging/thread/')) return item.href;
   return '';
 }
 
@@ -180,9 +201,69 @@ function isUnread(item) {
 /* ── Click into a conversation and get the URL ── */
 
 function getClickTarget(item) {
+  const threadA = item.querySelector('a[href*="/messaging/thread/"]:not([href*="/thread/new"])');
+  if (threadA) return threadA;
   const link = item.querySelector('a[href*="/messaging/"]') || item.querySelector('a');
   if (link) return link;
   return item;
+}
+
+function stripThreadUrlQuery(href) {
+  if (!href) return '';
+  const s = href.split('?')[0].split('#')[0];
+  return s;
+}
+
+/** First /messaging/thread/ link outside the conversation list (detail pane / header). */
+function readThreadUrlFromDetailPanel() {
+  const listContainer = findListContainer();
+  for (const a of document.querySelectorAll('a[href*="/messaging/thread/"]')) {
+    const u = stripThreadUrlQuery(a.href || '');
+    if (!u || u.includes('/messaging/thread/new')) continue;
+    if (listContainer && listContainer.contains(a)) continue;
+    return u;
+  }
+  return '';
+}
+
+/**
+ * LinkedIn often keeps window.location on the wrong thread; row href can be missing or shared.
+ * Read URL from the detail pane (outside sidebar list) until it stabilizes.
+ */
+async function openThreadAndGetConversationUrl(el) {
+  const target = getClickTarget(el);
+  const rowHrefFull = extractUrl(el) || target.href || '';
+  const rowNorm = stripThreadUrlQuery(rowHrefFull);
+  target.click();
+
+  let prev = '';
+  let same = 0;
+  const t0 = Date.now();
+  const deadline = 10000;
+
+  while (Date.now() - t0 < deadline) {
+    checkCancelled();
+    await sleep(250);
+    const panel = readThreadUrlFromDetailPanel();
+    const loc = stripThreadUrlQuery(window.location.href);
+    let u = '';
+    if (panel && panel.includes('/messaging/thread/')) u = panel;
+    else if (loc.includes('/messaging/thread/') && !loc.includes('/new')) u = loc;
+    if (!u && rowNorm.includes('/messaging/thread/')) u = rowNorm;
+    if (!u || u.includes('/new')) continue;
+
+    if (u === prev) same++;
+    else {
+      prev = u;
+      same = 1;
+    }
+    if (same >= 2 && Date.now() - t0 > 500) return u;
+  }
+
+  const lastPanel = readThreadUrlFromDetailPanel();
+  if (lastPanel) return lastPanel;
+  if (rowNorm.includes('/messaging/thread/')) return rowNorm;
+  return stripThreadUrlQuery(window.location.href);
 }
 
 /* ── Scroll UP in thread to load older messages for context ── */
@@ -358,7 +439,8 @@ async function verifyFullLoad(container) {
 
 /* ── Unread filter ── */
 
-async function tryApplyUnreadFilter() {
+async function tryApplyUnreadFilter(options = {}) {
+  const required = options.required === true;
   reportProgress(1, 'Looking for unread filter...');
 
   const allBtns = document.querySelectorAll('button, [role="tab"], [role="option"], [role="radio"]');
@@ -394,7 +476,11 @@ async function tryApplyUnreadFilter() {
     await sleep(300);
   }
 
-  log('Unread filter not found, proceeding with full list');
+  if (required) {
+    log('Unread filter not found (required for sync)');
+  } else {
+    log('Unread filter not found, proceeding with full list');
+  }
   return false;
 }
 
@@ -410,19 +496,103 @@ async function tryClearFilter() {
   }
 }
 
+/* ── Count unreads only (sidebar, no thread open) ── */
+
+async function countUnreadOnly() {
+  const listContainer = findListContainer();
+  if (!listContainer) {
+    throw new Error('Could not find conversation list');
+  }
+
+  reportProgress(0, 'Count unread: filter...');
+  const filterApplied = await tryApplyUnreadFilter({ required: true });
+  if (!filterApplied) {
+    throw new Error(
+      'Unread filter could not be applied. Open LinkedIn Messaging and ensure you can switch to the Unread view.'
+    );
+  }
+
+  const allMap = new Map();
+
+  function snapshotUnreadItems() {
+    const items = findConversationItems();
+    const seen = new Set();
+    const out = [];
+    for (const item of items) {
+      const name = extractName(item);
+      const preview = extractPreview(item);
+      const url = extractUrl(item);
+      const timestamp = extractTimestamp(item);
+      const unread = true;
+      const key = url || `${name}__${timestamp}__${preview.slice(0, 80)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const row = {
+        key,
+        participant_name: name,
+        conversation_url: url ? stripThreadUrlQuery(url) : '',
+        message_preview: preview,
+        timestamp,
+        is_unread: unread,
+        read_status: 'unread'
+      };
+      out.push(row);
+      allMap.set(key, {
+        participant_name: name,
+        conversation_url: row.conversation_url,
+        message_preview: preview,
+        timestamp,
+        is_unread: unread,
+        read_status: 'unread'
+      });
+    }
+    return out;
+  }
+
+  reportProgress(25, 'Count unread: loading list...');
+  const container = findListContainer() || listContainer;
+  await scrollToLoadAll(container, 5, 5);
+  await verifyFullLoad(container);
+
+  const rows = snapshotUnreadItems();
+  const initial_unread_count = rows.length;
+  const estimated_batches = Math.max(1, Math.ceil(initial_unread_count / 10));
+  const label = `Count · ${initial_unread_count} unreads (~${estimated_batches} batches)`;
+  reportProgress(100, label);
+  log(`COUNT UNREAD: ${initial_unread_count} unique rows (est. ${estimated_batches} batches × 10)`);
+
+  return {
+    extracted_at: new Date().toISOString(),
+    unreadFilterApplied: true,
+    initial_unread_count,
+    estimated_batches,
+    all_conversations: Array.from(allMap.values()),
+    participant_names: rows.map(r => r.participant_name),
+    list_row_keys: rows.map(r => r.key),
+  };
+}
+
 /* ── Main extraction ── */
 
 async function extractRaw() {
   const listContainer = findListContainer();
   if (!listContainer) {
-    return { error: 'Could not find conversation list', conversations: [], unread: [] };
+    throw new Error('Could not find conversation list');
   }
 
   reportProgress(0, 'Starting...');
 
-  log('Phase 0: Attempting unread filter...');
-  const filterApplied = await tryApplyUnreadFilter();
+  log('Phase 0: Unread filter (required for sync)...');
+  const filterApplied = await tryApplyUnreadFilter({ required: true });
+  if (!filterApplied) {
+    throw new Error(
+      'Unread filter could not be applied. Open LinkedIn Messaging and ensure you can switch to the Unread view.'
+    );
+  }
+
   const BATCH_SIZE = 10;
+  const MAX_MSG_SNIPPET = 10;
   const MAX_BATCH_LOOPS = 60;
   const allMap = new Map();
   const processedUnreadKeys = new Set();
@@ -467,13 +637,26 @@ async function extractRaw() {
     return out.filter(x => x.is_unread);
   }
 
+  reportProgress(8, 'Loading unread list for initial count...');
+  const countContainer = findListContainer() || listContainer;
+  await scrollToLoadAll(countContainer, 5, 5);
+  await verifyFullLoad(countContainer);
+  const initialUnreadSnapshot = snapshotUnreadItems();
+  const initial_unread_count = initialUnreadSnapshot.length;
+  const estimated_batches = Math.max(1, Math.ceil(initial_unread_count / BATCH_SIZE));
+  maxUnreadSeen = Math.max(maxUnreadSeen, initial_unread_count);
+  log(`Initial unread count: ${initial_unread_count} (~${estimated_batches} batches)`);
+
   while (batchLoop < MAX_BATCH_LOOPS) {
     checkCancelled();
     batchLoop++;
 
     const liveContainer = findListContainer() || listContainer;
     log(`Batch loop ${batchLoop}: scrolling and verifying unread list...`);
-    reportProgress(Math.min(10 + batchLoop * 2, 50), `Loading unread list... loop ${batchLoop}`);
+    reportProgress(
+      Math.min(10 + batchLoop * 2, 50),
+      `Loading unread list · batch ${batchLoop}/~${estimated_batches}`
+    );
     await scrollToLoadAll(liveContainer, 5, 5);
     await verifyFullLoad(liveContainer);
 
@@ -489,56 +672,85 @@ async function extractRaw() {
     }
 
     const batch = newUnread.slice(0, BATCH_SIZE);
-    reportProgress(Math.min(55 + batchLoop * 2, 90), `Processing batch ${batchLoop}: ${batch.length} threads`);
+    reportProgress(
+      Math.min(55 + batchLoop * 2, 90),
+      `Processing batch ${batchLoop}/~${estimated_batches}: ${batch.length} threads`
+    );
 
+    const batchConversations = [];
     for (let i = 0; i < batch.length; i++) {
       checkCancelled();
       const c = batch[i];
-      const stepLabel = `Batch ${batchLoop} · ${i + 1}/${batch.length}: ${c.participant_name}`;
+      const stepLabel = `Batch ${batchLoop}/~${estimated_batches} · ${i + 1}/${batch.length}: ${c.participant_name}`;
       reportProgress(Math.min(60 + (i / Math.max(batch.length, 1)) * 25, 95), stepLabel);
       log(`  ${stepLabel}`);
 
       const el = c.element;
       el.scrollIntoView({ block: 'center' });
       await sleep(300);
-      const target = getClickTarget(el);
-      target.click();
-      await sleep(2200);
+      const tOpen = Date.now();
+      const conversationUrl = await openThreadAndGetConversationUrl(el);
+      const openMs = Date.now() - tOpen;
+      if (openMs < 2400) await sleep(2400 - openMs);
 
-      const threadUrl = window.location.href;
-      await scrollThreadForContext();
-      const messages = extractThreadMessages();
-      const latest10 = limitMessages(messages, 10);
+      const allMessages = extractThreadMessages();
+      const latestMessages = limitMessages(allMessages, MAX_MSG_SNIPPET);
+      const latestText = latestMessages.length ? latestMessages[latestMessages.length - 1].text : '';
+      const prevText = latestMessages.length > 1 ? latestMessages[latestMessages.length - 2].text : '';
 
-      unreadWithMessages.push({
+      const idx = unreadWithMessages.length;
+      const row = {
+        index: idx,
         participant_name: c.participant_name,
-        conversation_url: threadUrl.includes('/messaging/') ? threadUrl : c.conversation_url,
+        conversation_url: conversationUrl || stripThreadUrlQuery(c.conversation_url),
         message_preview: c.message_preview,
         timestamp: c.timestamp,
         is_unread: true,
         read_status: 'unread',
-        messages,
-        latest_messages: latest10,
-        latest_message: messages.length ? messages[messages.length - 1].text : c.message_preview,
-        previous_message: messages.length > 1 ? messages[messages.length - 2].text : '',
-      });
+        latest_message: latestText || (c.message_preview || '').trim(),
+        latest: {
+          message_count: latestMessages.length,
+          messages: latestMessages,
+          latest_message: latestText,
+          previous_message: prevText
+        }
+      };
+
+      unreadWithMessages.push(row);
+      batchConversations.push(JSON.parse(JSON.stringify(row)));
       processedUnreadKeys.add(c.key);
-      log(`    → messages=${messages.length}, latest10=${latest10.length}`);
+      log(`    → rendered=${allMessages.length}, latest kept=${latestMessages.length}`);
     }
+
+    await sendSyncBatchFile({
+      batchIndex: batchLoop,
+      estimatedBatches: estimated_batches,
+      initialUnreadCount: initial_unread_count,
+      extracted_at: new Date().toISOString(),
+      unreadFilterApplied: true,
+      conversations: batchConversations,
+    });
   }
 
   const allOutput = Array.from(allMap.values());
-  let totalInInbox = allOutput.length;
-  if (filterApplied) {
-    log('Clearing unread filter to count total inbox...');
-    reportProgress(96, 'Counting total inbox...');
-    await tryClearFilter();
-    await sleep(1500);
-    const inboxContainer = findListContainer();
-    if (inboxContainer) {
-      await scrollToLoadAll(inboxContainer, 96, 3);
-      totalInInbox = countLoadedItems();
-      log(`Total inbox count: ${totalInInbox}`);
+  let totalInInbox;
+  if (SYNC_TEMP_BATCH_DOWNLOAD_NO_PERSIST) {
+    // Avoid switching away from Unread or re-scrolling full inbox; total is best-effort from unread list.
+    totalInInbox = maxUnreadSeen;
+    log('Temp mode: skipping filter clear and full inbox count (Unread view unchanged).');
+  } else {
+    totalInInbox = allOutput.length;
+    if (filterApplied) {
+      log('Clearing unread filter to count total inbox...');
+      reportProgress(96, 'Counting total inbox...');
+      await tryClearFilter();
+      await sleep(1500);
+      const inboxContainer = findListContainer();
+      if (inboxContainer) {
+        await scrollToLoadAll(inboxContainer, 96, 3);
+        totalInInbox = countLoadedItems();
+        log(`Total inbox count: ${totalInInbox}`);
+      }
     }
   }
 
@@ -553,6 +765,9 @@ async function extractRaw() {
 
   return {
     extracted_at: new Date().toISOString(),
+    unreadFilterApplied: true,
+    initial_unread_count,
+    estimated_batches,
     all_conversations: allOutput,
     unread_count: unreadWithMessages.length,
     total_in_inbox: totalInInbox,
@@ -612,28 +827,29 @@ async function extractContextTest(limit = 10) {
 
     el.scrollIntoView({ block: 'center' });
     await sleep(350);
-    const target = getClickTarget(el);
-    target.click();
-    await sleep(2400);
-
-    const threadUrl = window.location.href;
+    const tOpen = Date.now();
+    const conversationUrl = await openThreadAndGetConversationUrl(el);
+    const openMs = Date.now() - tOpen;
+    if (openMs < 2400) await sleep(2400 - openMs);
 
     // Only collect latest N messages (no older-context scrolling).
     const allMessages = extractThreadMessages();
     const latestMessages = limitMessages(allMessages, limit);
 
+    const latestText = latestMessages.length ? latestMessages[latestMessages.length - 1].text : '';
     conversations.push({
       index: i,
       participant_name: name,
-      conversation_url: threadUrl.includes('/messaging/') ? threadUrl : url,
+      conversation_url: conversationUrl || stripThreadUrlQuery(url),
       message_preview: preview,
       timestamp,
       is_unread: true,
       read_status: 'unread',
+      latest_message: latestText,
       latest: {
         message_count: latestMessages.length,
         messages: latestMessages,
-        latest_message: latestMessages.length ? latestMessages[latestMessages.length - 1].text : '',
+        latest_message: latestText,
         previous_message: latestMessages.length > 1 ? latestMessages[latestMessages.length - 2].text : ''
       },
     });
@@ -655,6 +871,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'EXTRACT_RAW') {
     cancelled = false;
     extractRaw()
+      .then(data => sendResponse({ success: true, data }))
+      .catch(err => {
+        if (err.message === 'CANCELLED') {
+          reportProgress(0, 'Stopped');
+          sendResponse({ success: false, error: 'CANCELLED' });
+        } else {
+          reportProgress(0, 'Error: ' + err.message);
+          sendResponse({ success: false, error: err.message });
+        }
+      });
+    return true;
+  }
+
+  if (request.action === 'COUNT_UNREAD_ONLY') {
+    cancelled = false;
+    countUnreadOnly()
       .then(data => sendResponse({ success: true, data }))
       .catch(err => {
         if (err.message === 'CANCELLED') {

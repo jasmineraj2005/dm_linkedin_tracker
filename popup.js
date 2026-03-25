@@ -1,5 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
   const syncBtn = document.getElementById('syncBtn');
+  const countBtn = document.getElementById('countBtn');
   const testBtn = document.getElementById('testBtn');
   const stopBtn = document.getElementById('stopBtn');
   const downloadBtn = document.getElementById('downloadBtn');
@@ -18,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function showSyncing() {
     syncBtn.classList.add('hidden');
+    countBtn.classList.add('hidden');
     testBtn.classList.add('hidden');
     stopBtn.classList.remove('hidden');
     downloadBtn.classList.add('hidden');
@@ -25,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function showIdle(hasData) {
     syncBtn.classList.remove('hidden');
+    countBtn.classList.remove('hidden');
     testBtn.classList.remove('hidden');
     stopBtn.classList.add('hidden');
     if (hasData) downloadBtn.classList.remove('hidden');
@@ -58,9 +61,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  chrome.storage.local.get(['syncState', 'lastSync', 'testLastResult'], (result) => {
+  chrome.storage.local.get(['syncState', 'lastSync', 'testLastResult', 'lastUnreadCount'], (result) => {
     const s = result.syncState;
     const hasData = !!result.testLastResult?.data || !!result.lastSync?.data;
+    const countData = result.lastUnreadCount?.data;
 
     if (s?.running) {
       setProgress(s.pct || 0, s.label || 'Syncing...');
@@ -85,9 +89,37 @@ document.addEventListener('DOMContentLoaded', () => {
         setProgress(100, 'Complete');
       }
       showIdle(true);
+    } else if (countData) {
+      const n = countData.initial_unread_count ?? 0;
+      const est = countData.estimated_batches ?? 1;
+      setProgress(100, `Last count · ${n} unreads (~${est} batches)`);
+      showIdle(false);
     } else {
       showIdle(false);
     }
+  });
+
+  countBtn.addEventListener('click', () => {
+    setProgress(0, 'Counting unreads...');
+    showSyncing();
+    startPolling();
+
+    chrome.runtime.sendMessage({ action: 'COUNT_UNREAD_ONLY' }, (response) => {
+      stopPolling();
+      if (chrome.runtime.lastError || !response?.success) {
+        const stopped = response?.error === 'CANCELLED';
+        setProgress(0, stopped ? 'Stopped' : (response?.error || 'Error'));
+        chrome.storage.local.get(['lastSync', 'testLastResult'], (r) => {
+          showIdle(!!r.lastSync?.data || !!r.testLastResult?.data);
+        });
+        return;
+      }
+      const d = response.data;
+      const n = d.initial_unread_count ?? 0;
+      const est = d.estimated_batches ?? 1;
+      setProgress(100, `Count · ${n} unreads (~${est} batches)`);
+      showIdle(false);
+    });
   });
 
   syncBtn.addEventListener('click', () => {
