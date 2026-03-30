@@ -2,6 +2,7 @@
 *.env
 .DS_Store
 agent/venv/
+agent/.venv/
 linkedin_*.json
 __pycache__/
 *.pyc

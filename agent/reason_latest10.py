@@ -73,7 +73,9 @@ def normalize_conversation(conv: Dict[str, Any]) -> Dict[str, Any]:
     if not latest:
         latest = {"messages": []}
 
-    messages = latest.get("messages", []) or []
+    messages = latest.get("messages") or conv.get("latest_messages") or []
+    if not messages and "messages" in conv:
+        messages = conv["messages"] or []
     latest_message = latest.get("latest_message") or (messages[-1].get("text") if messages else "")
     previous_message = latest.get("previous_message") or (messages[-2].get("text") if len(messages) >= 2 else "")
 
@@ -87,11 +89,36 @@ def normalize_conversation(conv: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def build_prompt(item: Dict[str, Any]) -> str:
+THREE_POINTER_TASK = """You are reviewing a LinkedIn DM conversation. Based on the latest messages below,
+provide exactly 3 bullet points (as the `pointers` array), in this order:
+1. What they want or why they reached out
+2. Where the conversation currently stands
+3. Suggested next reply (one sentence, in the inbox owner's voice — warm, concise, actionable)
+
+Keep each string under 15 words. Be direct.
+
+Direction: `sender` / `is_from_me` from the export may be wrong or unlabeled. Infer who is the inbox owner
+(Sara) vs the other person from the message text — e.g. openings like "Hey [name]", closings like "Cheers, Sara",
+first-person voice. Treat `participant_name` as always the other person (not Sara)."""
+
+NARRATIVE_THREE_POINTER_TASK = """You are summarizing a LinkedIn DM thread for an inbox triage view.
+Produce exactly 3 strings in `pointers` (same JSON shape as usual), each one a factual narrative sentence
+(like short case notes — who did what, what changed, where it landed). Use the other person's first name
+from `participant_name` where natural; refer to the inbox owner as Sara when needed.
+
+Order:
+1. How they opened / what they wanted or offered
+2. What Sara did or how the thread moved (if visible in messages)
+3. Current state or latest turn (who said what last, any open ask)
+
+Do not add a "suggested reply". Each sentence may be up to 40 words. Be concrete; no bullet prefixes inside strings."""
+
+
+def build_prompt(item: Dict[str, Any], *, narrative: bool = False) -> str:
     msgs = item["messages"]
 
     # Keep the prompt compact: we already extracted latest-10, but messages can still be long.
-    compact_msgs: List[Dict[str, str]] = []
+    compact_msgs: List[Dict[str, Any]] = []
     for m in msgs:
         text = (m.get("text") or "").strip()
         # Hard cap per-message to avoid giant prompts.
@@ -99,40 +126,46 @@ def build_prompt(item: Dict[str, Any]) -> str:
             text = text[:1200] + "..."
         compact_msgs.append({
             "sender": m.get("sender", ""),
+            "is_from_me": bool(m.get("is_from_me", False)),
             "timestamp": m.get("timestamp", ""),
             "text": text,
         })
 
-    return f"""You are an expert LinkedIn conversation assistant.
-From the latest 10 messages (oldest -> newest), extract the key discussion points so they can be quickly understood.
+    task = NARRATIVE_THREE_POINTER_TASK if narrative else THREE_POINTER_TASK
+    tail = (
+        "matching the three narrative roles above (opening / movement / latest state)."
+        if narrative
+        else "matching the three bullets above"
+    )
+    return f"""{task}
 
-Conversation participant: {item['participant_name']}
+Conversation with: {item['participant_name']}
 Conversation URL: {item['conversation_url']}
 
-Latest 10 messages (oldest -> newest):
+Messages (oldest -> newest):
 {json.dumps(compact_msgs, ensure_ascii=False, indent=2)}
 
-Task:
-Return exactly 3 pointers that capture the key discussion topics and context needed to understand the latest message.
-
 Output ONLY valid JSON with keys:
-- participant_name
-- pointers (array of exactly 3 strings, in priority order)
+- participant_name (string) — must exactly match "Conversation with:" above (full name from export)
+- pointers (array of exactly 3 strings {tail})
 
 Rules:
-- No extra keys besides `participant_name` and `pointers`
+- No extra keys besides participant_name and pointers
 - No markdown
+- Use your inferred direction (above), not `is_from_me` alone, when reasoning about who spoke last.
 """
 
 
-def call_openai(items: List[Dict[str, Any]], model: str) -> List[Dict[str, Any]]:
+def call_openai(
+    items: List[Dict[str, Any]], model: str, *, narrative: bool = False
+) -> List[Dict[str, Any]]:
     from openai import OpenAI
 
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     results: List[Dict[str, Any]] = []
     for item in items:
-        prompt = build_prompt(item)
+        prompt = build_prompt(item, narrative=narrative)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -158,6 +191,18 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("input", nargs="?", default=None, help="Path to JSON file. If omitted, reads from stdin.")
     ap.add_argument("--model", default="gpt-4o-mini", help="OpenAI model")
+    ap.add_argument(
+        "--narrative",
+        action="store_true",
+        help="Factual timeline-style pointers (not triage + suggested reply).",
+    )
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Process only the first N conversations (after normalize). 0 = all.",
+    )
     args = ap.parse_args()
 
     if args.input:
@@ -167,11 +212,13 @@ def main() -> None:
 
     conversations = raw.get("conversations") or raw.get("unread_with_context") or []
     normalized = [normalize_conversation(c) for c in conversations]
+    if args.limit and args.limit > 0:
+        normalized = normalized[: args.limit]
     if not normalized:
         print("No conversations found in input JSON.", file=sys.stderr)
         sys.exit(1)
 
-    results = call_openai(normalized, model=args.model)
+    results = call_openai(normalized, model=args.model, narrative=args.narrative)
     out = {"count": len(results), "results": results}
     print(json.dumps(out, indent=2, ensure_ascii=False))
 

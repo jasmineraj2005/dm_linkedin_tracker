@@ -64,10 +64,15 @@ def load_json(path: str) -> Dict[str, Any]:
         return json.load(f)
 
 
-def normalize_messages(conv: Dict[str, Any]) -> List[Dict[str, str]]:
+def normalize_messages(conv: Dict[str, Any]) -> List[Dict[str, Any]]:
     latest = conv.get("latest") or conv.get("after") or {}
-    msgs = latest.get("messages") or conv.get("messages") or []
-    out: List[Dict[str, str]] = []
+    msgs = (
+        latest.get("messages")
+        or conv.get("latest_messages")
+        or conv.get("messages")
+        or []
+    )
+    out: List[Dict[str, Any]] = []
     for m in msgs:
         text = (m.get("text") or "").strip()
         if not text:
@@ -77,6 +82,7 @@ def normalize_messages(conv: Dict[str, Any]) -> List[Dict[str, str]]:
         out.append(
             {
                 "sender": m.get("sender", ""),
+                "is_from_me": bool(m.get("is_from_me", False)),
                 "timestamp": m.get("timestamp", ""),
                 "text": text,
             }
@@ -84,8 +90,11 @@ def normalize_messages(conv: Dict[str, Any]) -> List[Dict[str, str]]:
     return out
 
 
-def build_prompt(participant_name: str, conversation_url: str, messages: List[Dict[str, str]]) -> str:
+def build_prompt(participant_name: str, conversation_url: str, messages: List[Dict[str, Any]]) -> str:
     return f"""{PERSONALITY_BRIEF}
+
+Note: `sender` / `is_from_me` in the export may be unlabeled or unreliable. Infer Sara vs the other person from
+context (e.g. "Hey [name]", "Cheers, Sara", first-person framing). `participant_name` is always the other person.
 
 Conversation participant: {participant_name}
 Conversation URL: {conversation_url}

@@ -13,8 +13,11 @@ Chrome extension that extracts unread LinkedIn messages.
 
 1. Go to https://www.linkedin.com/messaging/
 2. Click extension icon
-3. Click **Sync Now**
-4. Check browser console (F12) for extracted data
+3. Optionally enter **your display name** in the popup (improves `is_from_me` / `sender: "me"` detection in extracted messages)
+4. Click **Sync Now** or **Test latest 10**
+5. Check browser console (F12) on the LinkedIn tab for extraction logs; service worker console for orchestration logs
+
+Stored `conversation_url` values omit query strings such as `?filter=unread` so the same thread dedupes consistently across runs.
 
 ## Output
 
@@ -34,6 +37,7 @@ Chrome extension that extracts unread LinkedIn messages.
 ## Files
 
 - `manifest.json` - Extension config
-- `popup.html/js` - UI
+- `popup.html/js` - UI (saves `dmOwnerDisplayName` to `chrome.storage.local`)
 - `content.js` - Message extraction
 - `styles.css` - Styling
+- `agent/` - Python helpers (`reason_latest10.py`, `filter_messages.py`, `composer/compose_replies.py`)

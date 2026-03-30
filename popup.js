@@ -1,4 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
+  const ownerNameInput = document.getElementById('ownerNameInput');
   const syncBtn = document.getElementById('syncBtn');
   const testBtn = document.getElementById('testBtn');
   const stopBtn = document.getElementById('stopBtn');
@@ -58,7 +59,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  chrome.storage.local.get(['syncState', 'lastSync', 'testLastResult'], (result) => {
+  function saveOwnerDisplayName() {
+    const v = (ownerNameInput && ownerNameInput.value ? ownerNameInput.value : '').trim();
+    chrome.storage.local.set({ dmOwnerDisplayName: v });
+  }
+  if (ownerNameInput) {
+    ownerNameInput.addEventListener('blur', saveOwnerDisplayName);
+  }
+
+  chrome.storage.local.get(['syncState', 'lastSync', 'testLastResult', 'dmOwnerDisplayName'], (result) => {
+    if (ownerNameInput && result.dmOwnerDisplayName) {
+      ownerNameInput.value = result.dmOwnerDisplayName;
+    }
     const s = result.syncState;
     const hasData = !!result.testLastResult?.data || !!result.lastSync?.data;
 
@@ -91,6 +103,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   syncBtn.addEventListener('click', () => {
+    saveOwnerDisplayName();
     setProgress(0, 'Starting...');
     showSyncing();
     startPolling();
@@ -120,6 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   testBtn.addEventListener('click', () => {
+    saveOwnerDisplayName();
     setProgress(0, 'Testing...');
     showSyncing();
     startPolling();

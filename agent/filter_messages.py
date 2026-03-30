@@ -53,10 +53,16 @@ def call_openai(raw_data: dict) -> list:
         ts = c.get("timestamp", "")
         unread_entry = unread.get(name, {})
         latest = (unread_entry.get("latest_message") or preview or "").strip()
+        lm = unread_entry.get("latest_messages") or unread_entry.get("messages") or []
+        # Extension may omit reliable direction; model must infer from text + preview.
+        last_from_me = False
+        if lm and isinstance(lm[-1], dict):
+            last_from_me = bool(lm[-1].get("is_from_me")) or lm[-1].get("sender") == "me"
         items.append({
             "participant_name": name,
             "message_preview": preview,
             "latest_message": latest,
+            "latest_message_is_from_me": last_from_me,
             "timestamp": ts,
             "is_unread": c.get("is_unread", False),
         })
@@ -67,7 +73,11 @@ def call_openai(raw_data: dict) -> list:
 3. Worth following up: cold DMs, genuine requests, feedback asks, or meaningful replies from others.
 
 Rules:
-- If the latest/preview message starts with "You:" or "You sent", EXCLUDE the conversation (user sent it).
+- `participant_name` is always the other person (not the inbox owner). `latest_message_is_from_me` may be false
+  even when the owner sent last — do not rely on it alone. Infer who sent the latest message from `latest_message`
+  and `message_preview` text (sign-offs, "Hey [name]", first-person cues). If the latest content is clearly from
+  the inbox owner, EXCLUDE.
+- If the latest/preview message starts with "You:" or "You sent" (LinkedIn UI convention), EXCLUDE (user sent latest).
 - Exclude obvious spam: "insert meaningful message", pure links, "Thanks for connecting" with nothing else, marketing blurb.
 - Exclude sponsored or automated-looking content.
 - INCLUDE: cold DMs where someone is reaching out, asking for feedback, coffee chat, collaboration, or replying meaningfully.
